@@ -151,7 +151,7 @@ def main():
             else:
                 i, message, reply_markup = prepare_message(next(dialogs[chat_id]['batch_generator']))
                 if (i + 1) % 10 == 0:
-                    bot.send_message(chat_id=chat_id, text='<i>отвечено на {} вопросов</i>'.format(i+1),
+                    bot.send_message(chat_id=chat_id, text='<i>отвечено на {} вопросов</i>'.format(i),
                                      parse_mode='HTML')
                 bot.send_message(chat_id=chat_id, text=message,
                                  reply_markup=reply_markup, parse_mode='HTML')
