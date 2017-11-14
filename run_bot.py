@@ -121,7 +121,7 @@ def main():
         writer = csv.writer(tsvfile, delimiter='\t')
 
         if not exists:
-            writer.writerow(['chat_id', 'question_id', 'question', 'is_bot', 'answer', 'time_asked', 'time_answered',
+            writer.writerow(['chat_id', 'user', 'question_id', 'question', 'is_bot', 'answer', 'time_asked', 'time_answered',
                              'is_meaningful', 'human_score', 'bot_score'])
             tsvfile.flush()
 
@@ -137,11 +137,12 @@ def main():
         def reply(bot: Bot, update: Update):
             query = update.callback_query
             chat_id = query.message.chat_id
+            user = (update.effective_user.first_name or '') + '@' + (update.effective_user.username or '')
 
             time_asked, question_id, human_score, bot_score, is_bot, is_meaningful = query.data.split(':')
             question_id = int(question_id)
             is_bot = int(is_bot)
-            writer.writerow([chat_id, question_id, data[question_id][0][3], is_bot, data[question_id][is_bot+1][1],
+            writer.writerow([chat_id, user, question_id, data[question_id][0][3], is_bot, data[question_id][is_bot+1][1],
                              time_asked, int(time.time()), is_meaningful, human_score, bot_score])
             tsvfile.flush()
 
