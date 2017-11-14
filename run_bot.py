@@ -43,17 +43,17 @@ def prepare_dataset(config):
                 assert is_human1 == '1'
                 assert is_human2 == '0'
 
-                if float(bot_score) <= 0.6:
-                    continue
-
                 question, human = answer_human.split('<ANS_START>')
                 question2, bot = answer_bot.split('<ANS_START>')
 
                 assert question == question2
 
-                data.append(((index, "{}\n".format(html.escape(question.split('>')[-1].strip()))),
-                            (0, "<b>Продолжение:</b>\n{}".format(html.escape(human.strip()))),
-                            (1, "<b>Продолжение:</b>\n{}".format(html.escape(bot.strip())))))
+                data.append(((index,
+                              float(human_score),
+                              float(bot_score),
+                              "{}\n".format(html.escape(question.split('>')[-1].strip()))),
+                            (0, html.escape(human.strip())),
+                            (1, html.escape(bot.strip()))))
                 index += 1
             except StopIteration:
                 break
@@ -86,14 +86,14 @@ def batch_generator_generator(data):
 
 
 def prepare_message(instance):
-    questions_asked, ((q_id, question), (bot_or_not, answer)) = instance
-    message = question + '\n' + answer
+    questions_asked, ((q_id, human_score, bot_score, question), (bot_or_not, answer)) = instance
+    message = question + '\n' + "<b>Продолжение:</b>\n{}".format(answer)
 
     t = int(time.time())
 
     button_list = [
-        [InlineKeyboardButton('Осмысленно', callback_data='{}.{}.{}.1'.format(t, q_id, bot_or_not)),
-         InlineKeyboardButton('Не осмысленно', callback_data='{}.{}.{}.0'.format(t, q_id, bot_or_not))]
+        [InlineKeyboardButton('Осмысленно', callback_data='{}:{}:{}:{}:{}:1'.format(t, q_id, human_score, bot_score, bot_or_not)),
+         InlineKeyboardButton('Не осмысленно', callback_data='{}:{}:{}:{}:{}:0'.format(t, q_id, human_score, bot_score, bot_or_not))]
     ]
     reply_markup = InlineKeyboardMarkup(button_list)
 
@@ -122,7 +122,7 @@ def main():
 
         if not exists:
             writer.writerow(['chat_id', 'question_id', 'question', 'is_bot', 'answer', 'time_asked', 'time_answered',
-                             'is_meaningful'])
+                             'is_meaningful', 'human_score', 'bot_score'])
             tsvfile.flush()
 
         def start(bot: Bot, update: Update):
@@ -138,11 +138,11 @@ def main():
             query = update.callback_query
             chat_id = query.message.chat_id
 
-            time_asked, question_id, is_bot, is_meaningful = query.data.split('.')
+            time_asked, question_id, human_score, bot_score, is_bot, is_meaningful = query.data.split(':')
             question_id = int(question_id)
             is_bot = int(is_bot)
-            writer.writerow([chat_id, question_id, data[question_id][0][1], is_bot, data[question_id][is_bot+1][1],
-                             time_asked, int(time.time()), is_meaningful])
+            writer.writerow([chat_id, question_id, data[question_id][0][3], is_bot, data[question_id][is_bot+1][1],
+                             time_asked, int(time.time()), is_meaningful, human_score, bot_score])
             tsvfile.flush()
 
             if chat_id not in dialogs:
