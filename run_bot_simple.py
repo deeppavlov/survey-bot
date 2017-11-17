@@ -39,7 +39,7 @@ def prepare_dataset():
                 question = cs[-1]
 
                 data.append(Row(index, question, answer,
-                                OPERATOR_HUMAN if is_human else OPERATOR_BOT, discriminator_score))
+                                OPERATOR_HUMAN if int(is_human) else OPERATOR_BOT, discriminator_score))
                 index += 1
             except StopIteration:
                 break
@@ -103,7 +103,7 @@ def main():
         writer = csv.writer(tsvfile, delimiter='\t')
 
         if not exists:
-            writer.writerow(['chat_id', 'user', 'question_id', 'question', 'is_bot', 'answer', 'time_asked', 'time_answered',
+            writer.writerow(['chat_id', 'user', 'question_id', 'operator', 'question', 'answer', 'time_asked', 'time_answered',
                              'is_meaningful', 'discriminator_score'])
             tsvfile.flush()
 
@@ -125,7 +125,7 @@ def main():
             question_id = int(question_id)
             question = data[question_id][1]
             answer = data[question_id][2]
-            writer.writerow([chat_id, user, question_id, question, operator, answer,
+            writer.writerow([chat_id, user, question_id, operator, question, answer,
                              time_asked, datetime.now().isoformat(), is_meaningful, score])
             tsvfile.flush()
 
