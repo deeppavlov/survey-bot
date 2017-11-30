@@ -1,7 +1,7 @@
 import csv
 import random
 from datetime import datetime
-from itertools import groupby
+from itertools import groupby, chain
 from typing import List, Tuple, Iterator
 import re
 
@@ -13,8 +13,8 @@ from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
 
 
-INPUT_FILE = 'downloads/sber2.csv'
-OUTPUT_FILE = 'target/sber2_2.tsv'
+INPUT_FILE = 'downloads/sber3.csv'
+OUTPUT_FILE = 'target/sber3_{}.tsv'.format(datetime.now().strftime('%Y%m%dT%H%M%S'))
 TOKEN = os.environ['SENSE_BOT_TOKEN']
 OPERATOR_RANDOM = 'random'
 OPERATOR_HUMAN = 'human'
@@ -24,15 +24,14 @@ Row = namedtuple('Row', 'id question answer operator discriminator')
 
 
 def prepare_dataset(filename=INPUT_FILE) -> Iterator[Row]:
+    cache = {}
     with open(filename) as f:
         csvfile = csv.reader(f, delimiter=',')
-        header = next(csvfile)
-        assert header == ['Is_human', 'Text', 'Predict']
-        index = -1
+        next(csvfile)
+        index = 0
         while True:
             try:
-                index += 1
-                row_id, [is_human, text, discriminator_score] = next(csvfile)
+                is_human, text, discriminator_score = next(csvfile)
                 chunks = re.findall(r'(<[A-Z_]+> [^<>]*)', text)
                 answer = chunks[-1]
 
@@ -97,10 +96,6 @@ def mixin_random_answers(dataset):
             else:
                 raise Exception('Unknown operator {}'.format(d.operator))
 
-    print('humans:', human_count)
-    print('bots:', bot_count)
-    print('randoms:', random_count)
-
 
 def filter_duplicate_answers(dataset):
     by_question = lambda row: row.question
@@ -118,11 +113,20 @@ def filter_duplicate_answers(dataset):
             yield from (row for row in data if row.operator != 'bot')
 
 
+def balance_operators(dataset):
+    dataset = list(dataset)
+    operators = [OPERATOR_HUMAN, OPERATOR_BOT, OPERATOR_RANDOM]
+    operatos_rows = [[r for r in dataset if r.operator == op] for op in operators]
+    dataset = list(chain(*zip(*operatos_rows)))
+    random.shuffle(dataset)
+    return dataset
+
+
 def numerate_ids(dataset):
-    for new_id, row in enumerate(dataset):
-        vals = dict(zip(Row._fields, row))
-        vals['id'] = new_id
-        yield Row(**vals)
+    dataset = list(dataset)
+    for op in [OPERATOR_HUMAN, OPERATOR_BOT, OPERATOR_RANDOM]:
+        print(op, ':', len([1 for r in dataset if r.operator == op]))
+    return {r.id: r for r in dataset}
 
 
 def batch_generator_generator(data):
@@ -166,7 +170,7 @@ def main():
     cached_file = INPUT_FILE + '.pickle'
     if not os.path.isfile(cached_file):
         print('Creating cache file {} ...'.format(cached_file))
-        dataset = list(numerate_ids(mixin_random_answers(filter_duplicate_answers(prepare_dataset(INPUT_FILE)))))
+        dataset = numerate_ids(balance_operators(mixin_random_answers(filter_duplicate_answers(prepare_dataset(INPUT_FILE)))))
         with open(cached_file, 'wb') as f:
             pickle.dump(dataset, f)
         print('Created!')

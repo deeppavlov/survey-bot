@@ -1,38 +1,41 @@
 import csv
 import random
 from datetime import datetime
-from itertools import groupby
-from typing import List, Tuple, Iterator
+from itertools import chain
+from typing import List, Tuple, Dict
 import re
 
 import os
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 
 import pickle
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 
 
-INPUT_FILE = 'downloads/sber2.csv'
-OUTPUT_FILE = 'target/sber2_2.tsv'
+INPUT_FILE = 'downloads/test_predict_243k_balanced_2911_0.csv'
+CACHE_FILE = INPUT_FILE + '2var.pickle'
+OUTPUT_FILE = 'target/test_predict_243k_balanced_2911_0_{}.tsv'.format(datetime.now().strftime('%Y%m%dT%H%M%S'))
 TOKEN = os.environ['SENSE_BOT_TOKEN']
 OPERATOR_RANDOM = 'random'
 OPERATOR_HUMAN = 'human'
 OPERATOR_BOT = 'bot'
+OPERATOR_BOT_BEST = 'botbest'
+OPERATORS = [OPERATOR_BOT, OPERATOR_BOT_BEST]
 
-Row = namedtuple('Row', 'id question answer operator discriminator')
+Row = namedtuple('Row', 'id context question answer operator discriminator')
 
 
-def prepare_dataset(filename=INPUT_FILE) -> Iterator[Row]:
+def prepare_dataset(filename=INPUT_FILE) -> Dict[str, List[Row]]:
+    contexts = defaultdict(list)
     with open(filename) as f:
         csvfile = csv.reader(f, delimiter=',')
-        header = next(csvfile)
-        assert header == ['Is_human', 'Text', 'Predict']
-        index = -1
+        next(csvfile)
+        index = 0
         while True:
             try:
-                index += 1
-                row_id, [is_human, text, discriminator_score] = next(csvfile)
+                text, is_human, discriminator_score = next(csvfile)
+                context, *_ = text.split(' <ANS_START> ')
                 chunks = re.findall(r'(<[A-Z_]+> [^<>]*)', text)
                 answer = chunks[-1]
 
@@ -51,91 +54,50 @@ def prepare_dataset(filename=INPUT_FILE) -> Iterator[Row]:
                     print(answer)
                     continue
 
-                # if len(set(word_tokenize(question))) < 7:
-                #     continue
+                if int(is_human):
+                    continue
 
-                row = Row(index, question, answer, OPERATOR_HUMAN if int(is_human) else OPERATOR_BOT,
-                          discriminator_score)
+                row = Row(index, context, question, answer, OPERATOR_BOT, float(discriminator_score))
 
-                # if len(set(answer.split())) > 15:
-                #     continue
-
-                # if row.operator == OPERATOR_BOT and float(row.discriminator) < 0.5:
-                #     continue
-
-                # if row.operator != OPERATOR_BOT and random.randint(1, 2) == 1:
-                #     continue
-
-                yield row
+                contexts[context].append(row)
                 index += 1
             except StopIteration:
                 break
             except IndexError:
                 pass
+    return contexts
 
 
-def mixin_random_answers(dataset):
+def get_best_and_random_answer(dataset):
+    for context, rows in dataset.items():
+        rows = list(rows)
+        if len(rows) == 1:
+            continue
+
+        best_row = max(rows, key=lambda x: x.discriminator)
+        values = dict(zip(Row._fields, best_row))
+        values['operator'] = OPERATOR_BOT_BEST
+        best_row = Row(**values)
+
+        random_row = random.choice(rows)
+
+        yield best_row
+        yield random_row
+
+
+def balance_and_shuffle(dataset):
     dataset = list(dataset)
-    answers = [d.answer for d in dataset]
-    random.shuffle(answers)
-
-    human_count = 0
-    bot_count = 0
-    random_count = 0
-
-    # for the 1/3 of data corrupt answer with random answer from the whole dataset
-    for d, random_answer in zip(dataset, answers):
-        if random.randint(1, 3) == 3:
-            yield Row(d.id, d.question, random_answer, OPERATOR_RANDOM, None)
-            random_count += 1
-        else:
-            yield d
-            if d.operator == OPERATOR_HUMAN:
-                human_count += 1
-            elif d.operator == OPERATOR_BOT:
-                bot_count += 1
-            else:
-                raise Exception('Unknown operator {}'.format(d.operator))
-
-    print('humans:', human_count)
-    print('bots:', bot_count)
-    print('randoms:', random_count)
-
-
-def filter_duplicate_answers(dataset):
-    by_question = lambda row: row.question
-
-    for group, diff_answers in groupby(sorted(dataset, key=by_question), key=by_question):
-        data = list(diff_answers)
-        bots = [row for row in data if row.operator == 'bot']
-        if bots:
-            max_score_row = max(bots, key=lambda x: float(x.discriminator))
-            min_score_row = min(bots, key=lambda x: float(x.discriminator))
-
-            yield max_score_row
-            if len(bots) > 1:
-                yield min_score_row
-            yield from (row for row in data if row.operator != 'bot')
+    operatos_rows = [[r for r in dataset if r.operator == op] for op in OPERATORS]
+    dataset = list(chain(*zip(*operatos_rows)))
+    random.shuffle(dataset)
+    return dataset
 
 
 def numerate_ids(dataset):
-    for new_id, row in enumerate(dataset):
-        vals = dict(zip(Row._fields, row))
-        vals['id'] = new_id
-        yield Row(**vals)
-
-
-def batch_generator_generator(data):
-    seq = list(data)
-
-    def batch_generator():
-        questions_asked = 0
-        while True:
-            random.shuffle(seq)
-            for q in seq:
-                yield questions_asked, q
-                questions_asked += 1
-    return batch_generator()
+    dataset = list(dataset)
+    for op in OPERATORS:
+        print(op, ':', len([1 for r in dataset if r.operator == op]))
+    return {r.id: r for r in dataset}
 
 
 def prepare_message(instance: Tuple[int, Row]):
@@ -163,29 +125,30 @@ def main():
     exists = os.path.isfile(OUTPUT_FILE)
     os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
 
-    cached_file = INPUT_FILE + '.pickle'
-    if not os.path.isfile(cached_file):
-        print('Creating cache file {} ...'.format(cached_file))
-        dataset = list(numerate_ids(mixin_random_answers(filter_duplicate_answers(prepare_dataset(INPUT_FILE)))))
-        with open(cached_file, 'wb') as f:
+    if not os.path.isfile(CACHE_FILE):
+        print('Creating cache file {} ...'.format(CACHE_FILE))
+        dataset = numerate_ids(balance_and_shuffle(get_best_and_random_answer(prepare_dataset(INPUT_FILE))))
+        with open(CACHE_FILE, 'wb') as f:
             pickle.dump(dataset, f)
         print('Created!')
 
-    with open(cached_file, 'rb') as f:
+    with open(CACHE_FILE, 'rb') as f:
         dataset = pickle.load(f)
 
     with open(OUTPUT_FILE, 'a', newline='') as tsvfile:
         writer = csv.writer(tsvfile, delimiter='\t')
 
         if not exists:
-            writer.writerow(['chat_id', 'user', 'question_id', 'operator', 'question', 'answer', 'time_asked', 'time_answered',
-                             'is_meaningful', 'discriminator_score'])
+            writer.writerow(['chat_id', 'user', 'question_id', 'context', 'operator', 'question', 'answer',
+                             'time_asked', 'time_answered', 'is_meaningful', 'discriminator_score'])
             tsvfile.flush()
 
         def start(bot: Bot, update: Update):
             chat_id = update.message.chat_id
+            dataset_rows = list(dataset.values())
+            random.shuffle(dataset_rows)
             dialogs[chat_id] = {
-                'batch_generator': batch_generator_generator(dataset)
+                'batch_generator': iter(enumerate(dataset_rows))
             }
 
             startup_message = '''Добрый день! Сейчас вам будут представлены фрагменты из чата оператора поддержки банка с клиентом. Просим вас оценить ответ оператора на вопрос клиента по степени осмысленности. Осмысленность понимайте как ваше субъективное ощущение того, что оператор понимает запрос клиента и пытается помочь.
@@ -206,9 +169,10 @@ def main():
 
             time_asked, question_id, score, operator, is_meaningful = query.data.split(';')
             question_id = int(question_id)
-            question = dataset[question_id][1]
-            answer = dataset[question_id][2]
-            writer.writerow([chat_id, user, question_id, operator, question, answer,
+            question = dataset[question_id].question
+            answer = dataset[question_id].answer
+            context = dataset[question_id].context
+            writer.writerow([chat_id, user, question_id, context, operator, question, answer,
                              time_asked, datetime.now().isoformat(), is_meaningful, score])
             tsvfile.flush()
 
