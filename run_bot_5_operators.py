@@ -15,9 +15,9 @@ from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 
 import html
 
-INPUT_FILE = 'downloads/test_predict_243k_balanced_2911_0.csv'
-CACHE_FILE = INPUT_FILE + '_4operators.pickle'
-OUTPUT_FILE = 'target/test_predict_243k_balanced_2911_0__4operators_context_{}.tsv'.format(datetime.now().strftime('%Y%m%dT%H%M%S'))
+INPUT_FILE = 'downloads/retr.csv'
+CACHE_FILE = INPUT_FILE + '_5operators.pickle'
+OUTPUT_FILE = 'target/retr__5operators_{}.tsv'.format(datetime.now().strftime('%Y%m%dT%H%M%S'))
 TOKEN = os.environ['SENSE_BOT_TOKEN']
 OPERATOR_RANDOM = 'random'
 OPERATOR_HUMAN = 'human'
@@ -25,8 +25,7 @@ OPERATOR_BOT_FIRST = 'botfirst'
 OPERATOR_BOT_BEST = 'botbest'
 OPERATOR_BOT_RETR = 'botretr'
 
-# TODO: add OPERATOR_BOT_RETR
-OPERATORS = [OPERATOR_HUMAN, OPERATOR_BOT_FIRST, OPERATOR_BOT_BEST, OPERATOR_RANDOM]
+OPERATORS = [OPERATOR_HUMAN, OPERATOR_BOT_FIRST, OPERATOR_BOT_BEST, OPERATOR_RANDOM, OPERATOR_BOT_RETR]
 
 operators_map = {'0': OPERATOR_BOT_FIRST,
                  '1': OPERATOR_HUMAN,
@@ -37,7 +36,7 @@ Row = namedtuple('Row', 'id context question answer operator discriminator')
 
 def prepare_dataset(filename=INPUT_FILE) -> Dict[str, List[Row]]:
     contexts = defaultdict(list)
-    with open(filename) as f:
+    with open(filename, encoding='utf8') as f:
         csvfile = csv.reader(f, delimiter=',')
         next(csvfile)
         index = 0
@@ -45,6 +44,7 @@ def prepare_dataset(filename=INPUT_FILE) -> Dict[str, List[Row]]:
             try:
                 text, is_human, discriminator_score = next(csvfile)
                 context, *_ = text.split(' <ANS_START> ')
+                context = context.strip()
                 chunks = re.findall(r'(<[A-Z_]+> [^<>]*)', text)
                 answer = chunks[-1]
 
@@ -91,7 +91,8 @@ def get_best_and_random_answer(dataset):
         human_rows = [r for r in rows if r.operator == OPERATOR_HUMAN]
         if not human_rows:
             continue
-        bot_rows = [r for r in rows if r.operator != OPERATOR_HUMAN]
+        bot_rows = [r for r in rows if r.operator == OPERATOR_BOT_FIRST]
+        retr_rows = [r for r in rows if r.operator == OPERATOR_BOT_RETR]
 
         if not bot_rows:
             continue
@@ -102,14 +103,17 @@ def get_best_and_random_answer(dataset):
         best_row = Row(**values)
 
         first_row = bot_rows[0]
+        retr_row = retr_rows[0]
+        if retr_row.discriminator < 0.5:
+            continue
 
         values = dict(zip(Row._fields, random.choice(bot_rows)))
         values['operator'] = OPERATOR_RANDOM
         values['answer'] = random.choice(human_answers)
         random_row = Row(**values)
 
-        #TODO: add botretr here
-        yield human_rows[0], best_row, first_row, random_row
+        # yield human_rows[0], best_row, first_row, random_row, retr_row
+        yield human_rows[0], first_row, random_row, retr_row
 
 
 def shuffle(dataset):
@@ -122,7 +126,9 @@ def prepare_message(message_store: Dict[str, Any], instance: Tuple[int, Row]):
     questions_asked, row = instance
 
     # message = "{row.question}\n<b>Ответ:</b>\n{row.answer}".format(row=row)
-    message = "{question}\n<b>Ответ:</b>\n{answer}".format(question=html.escape(row.context), answer=row.answer)
+    question = re.sub(r'\d+', '<NUM>', row.question)
+    answer = re.sub(r'\d+', '<NUM>', row.answer)
+    message = "{question}\n<b>Ответ:</b>\n{answer}".format(question=html.escape(question), answer=html.escape(answer))
 
     time_asked = datetime.now().isoformat()
 
@@ -150,7 +156,7 @@ def main():
 
     messages_store = {}
 
-    if not os.path.isfile(CACHE_FILE):
+    if not os.path.isfile(CACHE_FILE) or True:
         print('Creating cache file {} ...'.format(CACHE_FILE))
         dataset = shuffle(get_best_and_random_answer(prepare_dataset(INPUT_FILE)))
         with open(CACHE_FILE, 'wb') as f:
@@ -212,8 +218,12 @@ def main():
                 bot.send_message(chat_id=chat_id, text=message,
                                  reply_markup=reply_markup, parse_mode='HTML')
 
+        def error_callback(bot, update, error):
+            print(error)
+
         dispatcher.add_handler(CommandHandler('start', start))
         dispatcher.add_handler(CallbackQueryHandler(reply))
+        dispatcher.add_error_handler(error_callback)
 
         updater.start_polling()
 
